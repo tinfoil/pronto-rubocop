@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 module Pronto
   class Rubocop < Runner
     class OffenseLine
@@ -31,7 +33,7 @@ module Pronto
 
       def suggestion_text
         return unless patch_cop.runner.pronto_rubocop_config['suggestions']
-        return if corrections_count == 0
+        return if corrections_count.zero?
         return if differing_lines_count != corrections_count
 
         @suggestion_text ||= corrected_lines[offense.line - 1]
@@ -39,10 +41,6 @@ module Pronto
 
       def corrected_lines
         @corrected_lines ||= corrector.rewrite.lines
-      end
-
-      def corrections_count
-        @corrections_count ||= corrector.corrections.count
       end
 
       def differing_lines_count
@@ -55,37 +53,50 @@ module Pronto
         processed_source.lines.join("\n").lines
       end
 
+      if ::RuboCop::Cop::Team.respond_to?(:mobilize) && ::RuboCop::Cop::Team.public_method_defined?(:investigate)
+        # rubocop >= 0.87.0 has both mobilize and public investigate method
+        MOBILIZE = :mobilize
+
+        def report
+          @report ||= autocorrect_team.investigate(processed_source).cop_reports.first
+        end
+
+        def corrector
+          report.corrector
+        end
+
+        def corrections_count
+          report.offenses.size
+        end
+      else
+        # rubocop 0.85.x and 0.86.0 have mobilize, older versions don't
+        MOBILIZE = ::RuboCop::Cop::Team.respond_to?(:mobilize) ? :mobilize : :new
+
+        def corrector
+          @corrector ||= begin
+            autocorrect_team.inspect_file(processed_source)
+            corrector = RuboCop::Cop::Corrector.new(processed_source.buffer)
+            corrector.corrections.concat(autocorrect_team.cops.first.corrections)
+            corrector
+          end
+        end
+
+        def corrections_count
+          @corrections_count ||= corrector.corrections.count
+        end
+      end
+
       def autocorrect_team
         @autocorrect_team ||=
-          if ::RuboCop::Cop::Team.respond_to?(:mobilize)
-            # rubocop v0.85.0 and later
-            ::RuboCop::Cop::Team.mobilize(
-              ::RuboCop::Cop::Registry.new([cop]),
-              patch_cop.rubocop_config,
-              auto_correct: true,
-              stdin: true,
-            )
-          else
-            ::RuboCop::Cop::Team.new(
-              ::RuboCop::Cop::Registry.new([cop]),
-              patch_cop.rubocop_config,
-              auto_correct: true,
-              stdin: true,
-            )
-          end
+          ::RuboCop::Cop::Team.send(MOBILIZE,
+                                    ::RuboCop::Cop::Registry.new([cop_class]),
+                                    patch_cop.rubocop_config,
+                                    auto_correct: true,
+                                    stdin: true)
       end
 
-      def cop
+      def cop_class
         patch_cop.registry.find_by_cop_name(offense.cop_name)
-      end
-
-      def corrector
-        @corrector ||= begin
-          autocorrect_team.inspect_file(processed_source)
-          corrector = RuboCop::Cop::Corrector.new(processed_source.buffer)
-          corrector.corrections.concat(autocorrect_team.cops.first.corrections)
-          corrector
-        end
       end
 
       def level
